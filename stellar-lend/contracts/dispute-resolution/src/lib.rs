@@ -4,7 +4,6 @@ use soroban_sdk::{
 };
 
 const DISPUTE_COUNTER: Symbol = symbol_short!("d_counter");
-const JUROR_STAKE: i128 = 10_000_000; // 10 XLM minimum juror stake
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,7 +61,7 @@ pub struct Dispute {
     pub evidence: Vec<Evidence>,
     pub jurors: Vec<Juror>,
     pub votes: Vec<Vote>,
-    pub resolution: Option<VoteChoice>,
+    pub resolution: u32, // 0=unresolved, 1=Valid, 2=Invalid
     pub resolved_at: Option<u64>,
     pub created_at: u64,
     pub appeal_parent: Option<u64>,
@@ -93,7 +92,11 @@ pub struct DisputeResolutionContract;
 impl DisputeResolutionContract {
     pub fn register_juror(env: Env, address: Address) {
         address.require_auth();
-        if env.storage().instance().has(&DisputeDataKey::Juror(address.clone())) {
+        if env
+            .storage()
+            .instance()
+            .has(&DisputeDataKey::Juror(address.clone()))
+        {
             panic!("already registered as juror");
         }
         let registration = JurorRegistration {
@@ -102,7 +105,9 @@ impl DisputeResolutionContract {
             total_cases: 0,
             rewards: 0,
         };
-        env.storage().instance().set(&DisputeDataKey::Juror(address), &registration);
+        env.storage()
+            .instance()
+            .set(&DisputeDataKey::Juror(address), &registration);
     }
 
     pub fn file_dispute(
@@ -114,7 +119,7 @@ impl DisputeResolutionContract {
         _evidence_data: BytesN<64>,
     ) -> u64 {
         disputer.require_auth();
-        
+
         if collateral_amount <= 0 {
             panic!("invalid collateral amount");
         }
@@ -134,14 +139,16 @@ impl DisputeResolutionContract {
             evidence: Vec::new(&env),
             jurors: Vec::new(&env),
             votes: Vec::new(&env),
-            resolution: None,
+            resolution: 0,
             resolved_at: None,
             created_at: env.ledger().sequence().into(),
             appeal_parent: None,
             appeal_stake: 0,
         };
 
-        env.storage().instance().set(&DisputeDataKey::Dispute(counter), &dispute);
+        env.storage()
+            .instance()
+            .set(&DisputeDataKey::Dispute(counter), &dispute);
         counter
     }
 
@@ -153,7 +160,8 @@ impl DisputeResolutionContract {
         data: BytesN<64>,
     ) {
         submitter.require_auth();
-        let mut dispute: Dispute = env.storage()
+        let mut dispute: Dispute = env
+            .storage()
             .instance()
             .get(&DisputeDataKey::Dispute(dispute_id))
             .unwrap_or_else(|| panic!("dispute not found"));
@@ -174,23 +182,29 @@ impl DisputeResolutionContract {
         dispute.evidence = evidence_list;
         dispute.status = DisputeStatus::Evidence;
 
-        env.storage().instance().set(&DisputeDataKey::Dispute(dispute_id), &dispute);
+        env.storage()
+            .instance()
+            .set(&DisputeDataKey::Dispute(dispute_id), &dispute);
     }
 
     pub fn select_jurors(env: Env, dispute_id: u64, selected: Vec<Address>) {
         // Only callable by the contract admin or automated system
-        let mut dispute: Dispute = env.storage()
+        let mut dispute: Dispute = env
+            .storage()
             .instance()
             .get(&DisputeDataKey::Dispute(dispute_id))
             .unwrap_or_else(|| panic!("dispute not found"));
 
-        if dispute.jurors.len() > 0 {
+        if !dispute.jurors.is_empty() {
             panic!("jurors already selected");
         }
 
         let mut jurors = Vec::new(&env);
         for address in selected.iter() {
-            let reg: Option<JurorRegistration> = env.storage().instance().get(&DisputeDataKey::Juror(address.clone()));
+            let reg: Option<JurorRegistration> = env
+                .storage()
+                .instance()
+                .get(&DisputeDataKey::Juror(address.clone()));
             if reg.is_some() && address != dispute.disputer {
                 jurors.push_back(Juror {
                     address: address.clone(),
@@ -206,7 +220,9 @@ impl DisputeResolutionContract {
 
         dispute.jurors = jurors;
         dispute.status = DisputeStatus::Voting;
-        env.storage().instance().set(&DisputeDataKey::Dispute(dispute_id), &dispute);
+        env.storage()
+            .instance()
+            .set(&DisputeDataKey::Dispute(dispute_id), &dispute);
     }
 
     pub fn cast_vote(
@@ -217,7 +233,8 @@ impl DisputeResolutionContract {
         rationale: String,
     ) {
         juror.require_auth();
-        let mut dispute: Dispute = env.storage()
+        let mut dispute: Dispute = env
+            .storage()
             .instance()
             .get(&DisputeDataKey::Dispute(dispute_id))
             .unwrap_or_else(|| panic!("dispute not found"));
@@ -230,7 +247,7 @@ impl DisputeResolutionContract {
         let mut found = false;
         let mut already_voted = false;
         let mut updated_jurors = Vec::new(&env);
-        
+
         for j in dispute.jurors.iter() {
             if j.address == juror {
                 found = true;
@@ -271,26 +288,33 @@ impl DisputeResolutionContract {
         // Check if can resolve (>66% majority)
         let total_votes = dispute.votes.len();
         if total_votes >= 3 {
-            let valid_count = dispute.votes.iter().filter(|v| v.vote == VoteChoice::Valid).count() as u32;
+            let valid_count = dispute
+                .votes
+                .iter()
+                .filter(|v| v.vote == VoteChoice::Valid)
+                .count() as u32;
             let invalid_count = total_votes - valid_count;
 
             if valid_count as f64 / total_votes as f64 > 0.66 {
-                dispute.resolution = Some(VoteChoice::Valid);
+                dispute.resolution = 1;
                 dispute.status = DisputeStatus::Resolved;
                 dispute.resolved_at = Some(env.ledger().sequence().into());
             } else if invalid_count as f64 / total_votes as f64 > 0.66 {
-                dispute.resolution = Some(VoteChoice::Invalid);
+                dispute.resolution = 2;
                 dispute.status = DisputeStatus::Resolved;
                 dispute.resolved_at = Some(env.ledger().sequence().into());
             }
         }
 
-        env.storage().instance().set(&DisputeDataKey::Dispute(dispute_id), &dispute);
+        env.storage()
+            .instance()
+            .set(&DisputeDataKey::Dispute(dispute_id), &dispute);
     }
 
     pub fn appeal(env: Env, dispute_id: u64, appellant: Address, stake: i128) -> u64 {
         appellant.require_auth();
-        let dispute: Dispute = env.storage()
+        let dispute: Dispute = env
+            .storage()
             .instance()
             .get(&DisputeDataKey::Dispute(dispute_id))
             .unwrap_or_else(|| panic!("dispute not found"));
@@ -319,28 +343,36 @@ impl DisputeResolutionContract {
             evidence: dispute.evidence.clone(),
             jurors: Vec::new(&env),
             votes: Vec::new(&env),
-            resolution: None,
+            resolution: 0,
             resolved_at: None,
             created_at: env.ledger().sequence().into(),
             appeal_parent: Some(dispute_id),
             appeal_stake: stake,
         };
 
-        env.storage().instance().set(&DisputeDataKey::Dispute(counter), &appealed);
+        env.storage()
+            .instance()
+            .set(&DisputeDataKey::Dispute(counter), &appealed);
 
         // Mark original as appealed
         let mut original = dispute;
         original.status = DisputeStatus::Appealed;
-        env.storage().instance().set(&DisputeDataKey::Dispute(dispute_id), &original);
+        env.storage()
+            .instance()
+            .set(&DisputeDataKey::Dispute(dispute_id), &original);
 
         counter
     }
 
     pub fn get_dispute(env: Env, dispute_id: u64) -> Option<Dispute> {
-        env.storage().instance().get(&DisputeDataKey::Dispute(dispute_id))
+        env.storage()
+            .instance()
+            .get(&DisputeDataKey::Dispute(dispute_id))
     }
 
     pub fn get_juror(env: Env, address: Address) -> Option<JurorRegistration> {
-        env.storage().instance().get(&DisputeDataKey::Juror(address))
+        env.storage()
+            .instance()
+            .get(&DisputeDataKey::Juror(address))
     }
 }
